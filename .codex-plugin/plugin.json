@@ -1,0 +1,14 @@
+{
+  "name": "resume-session",
+  "version": "0.1.0",
+  "description": "Resume Claude Code, Codex, Cursor, Grok, and Qoder CLI sessions as untrusted inert history.",
+  "author": {
+    "name": "fengqun"
+  },
+  "keywords": ["resume", "session", "claude", "codex", "cursor", "qoder", "grok"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "resume-session",
+    "shortDescription": "Resume foreign coding-agent sessions as inert history."
+  }
+}

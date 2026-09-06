@@ -1,0 +1,9 @@
+{
+  "name": "resume-session",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Resume Claude Code, Codex, Cursor, Grok, and Qoder CLI sessions as untrusted inert history.",
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
