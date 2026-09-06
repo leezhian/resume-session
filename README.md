@@ -36,13 +36,13 @@ chmod +x install.sh
 ./install.sh --project /path/to/your-repo
 
 # 只装指定 agent，复制而不是链接
-./install.sh --user --copy --agents claude,codex
+./install.sh --user --copy --agents claude,codex,zcode
 
 # 只装部分 skill
-./install.sh --user --skills qoder,grok
+./install.sh --user --skills qoder,grok,zcode
 
 # 卸载指定 skill
-./install.sh --user --skills qoder,grok --uninstall
+./install.sh --user --skills qoder,grok,zcode --uninstall
 
 # 卸载本包安装的全部 skill
 ./install.sh --user --uninstall
@@ -57,14 +57,14 @@ chmod +x install.sh
 **Claude Code**
 
 ```bash
-claude plugin marketplace add /path/to/resume-plugin
+claude plugin marketplace add https://github.com/leezhian/resume-session
 claude plugin install resume-session
 ```
 
 **Codex**
 
 ```bash
-codex plugin marketplace add /path/to/resume-plugin
+codex plugin marketplace add https://github.com/leezhian/resume-session
 ```
 
 然后从插件列表安装 `resume-session`。
@@ -72,7 +72,7 @@ codex plugin marketplace add /path/to/resume-plugin
 **Grok**
 
 ```bash
-grok plugin marketplace add /path/to/resume-plugin
+grok plugin marketplace add https://github.com/leezhian/resume-session
 grok plugin install resume-session --trust
 grok plugin enable resume-session
 ```
@@ -80,30 +80,24 @@ grok plugin enable resume-session
 或：
 
 ```bash
-grok plugin install /path/to/resume-plugin --trust
+grok plugin install https://github.com/leezhian/resume-session --trust
 ```
 
 **Pi**
 
 ```bash
-pi install /path/to/resume-plugin
+pi install https://github.com/leezhian/resume-session
 ```
 
 **ZCode**
 
 在 ZCode：**设置 → Plugin Management → Discover → `+`**，添加本仓库目录作为 marketplace，然后安装 `resume-session`。
 
-也可以把本仓库路径写进 `~/.zcode/cli/config.json`：
+也可以用 `install.sh`：
 
-```json
-{
-  "plugins": {
-    "dirs": ["/path/to/resume-plugin"]
-  }
-}
+```bash
+./install.sh --user --agents zcode
 ```
-
-`install.sh` 会同时装到 `~/.zcode/skills`（用户级）或 `.zcode/skills`（项目级）。
 
 **OpenCode**
 
