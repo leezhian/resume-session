@@ -1,0 +1,9 @@
+{
+  "name": "resume-session",
+  "version": "0.1.0",
+  "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, and ZCode sessions as untrusted inert history.",
+  "author": {
+    "name": "fengqun"
+  },
+  "skills": "skills"
+}

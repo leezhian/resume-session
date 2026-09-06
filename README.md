@@ -20,7 +20,7 @@
 
 Qoder 目前只支持 CLI 会话，不支持 Qoder IDE。
 
-可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor。
+可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor、ZCode。
 
 ## 安装
 
@@ -48,7 +48,7 @@ chmod +x install.sh
 ./install.sh --user --uninstall
 ```
 
-`--agents` 可选：`grok`、`claude`、`codex`、`opencode`、`pi`、`cursor`、`all`。
+`--agents` 可选：`grok`、`claude`、`codex`、`opencode`、`pi`、`cursor`、`zcode`、`all`。
 
 安装完成后新开一个 agent 会话即可使用。
 
@@ -88,6 +88,22 @@ grok plugin install /path/to/resume-plugin --trust
 ```bash
 pi install /path/to/resume-plugin
 ```
+
+**ZCode**
+
+在 ZCode：**设置 → Plugin Management → Discover → `+`**，添加本仓库目录作为 marketplace，然后安装 `resume-session`。
+
+也可以把本仓库路径写进 `~/.zcode/cli/config.json`：
+
+```json
+{
+  "plugins": {
+    "dirs": ["/path/to/resume-plugin"]
+  }
+}
+```
+
+`install.sh` 会同时装到 `~/.zcode/skills`（用户级）或 `.zcode/skills`（项目级）。
 
 **OpenCode**
 

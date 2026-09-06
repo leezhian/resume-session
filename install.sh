@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install resume-session skills for Claude Code, Codex, OpenCode, Pi, Grok, Cursor.
+# Install resume-session skills for Claude Code, Codex, OpenCode, Pi, Grok, Cursor, ZCode.
 # Does not call any agent plugin installer. Includes resume-zcode.
 set -euo pipefail
 
@@ -25,7 +25,7 @@ Options:
   --project [DIR]   Project install; DIR defaults to the current working directory
   --copy            Copy files instead of symlinking
   --link            Symlink into agent dirs (default)
-  --agents LIST     Where to install: grok,claude,codex,opencode,pi,cursor,all
+  --agents LIST     Where to install: grok,claude,codex,opencode,pi,cursor,zcode,all
   --skills LIST     Which skills: resume-claude,resume-codex,resume-cursor,
                     resume-qoder,resume-grok,resume-zcode,all
                     Short names also work: claude,codex,cursor,qoder,grok,zcode
@@ -168,6 +168,7 @@ vendor_dests() {
     agent_wanted opencode && echo "${PREFIX}/.config/opencode/skills"
     agent_wanted pi && echo "${PREFIX}/.pi/agent/skills"
     agent_wanted cursor && echo "${PREFIX}/.cursor/skills"
+    agent_wanted zcode && echo "${PREFIX}/.zcode/skills"
   else
     agent_wanted grok && echo "${PREFIX}/.grok/skills"
     agent_wanted claude && echo "${PREFIX}/.claude/skills"
@@ -175,6 +176,7 @@ vendor_dests() {
     agent_wanted opencode && echo "${PREFIX}/.opencode/skills"
     agent_wanted pi && echo "${PREFIX}/.pi/skills"
     agent_wanted cursor && echo "${PREFIX}/.cursor/skills"
+    agent_wanted zcode && echo "${PREFIX}/.zcode/skills"
   fi
 }
 
