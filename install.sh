@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install resume-session skills for Claude Code, Codex, OpenCode, Pi, Grok, Cursor.
-# Does not call any agent plugin installer.
+# Does not call any agent plugin installer. Includes resume-zcode.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_SRC="${ROOT}/skills"
-ALL_SKILLS=(resume-claude resume-codex resume-cursor resume-qoder resume-grok)
+ALL_SKILLS=(resume-claude resume-codex resume-cursor resume-qoder resume-grok resume-zcode)
 
 SCOPE="user"
 MODE="link"
@@ -27,8 +27,8 @@ Options:
   --link            Symlink into agent dirs (default)
   --agents LIST     Where to install: grok,claude,codex,opencode,pi,cursor,all
   --skills LIST     Which skills: resume-claude,resume-codex,resume-cursor,
-                    resume-qoder,resume-grok,all
-                    Short names also work: claude,codex,cursor,qoder,grok
+                    resume-qoder,resume-grok,resume-zcode,all
+                    Short names also work: claude,codex,cursor,qoder,grok,zcode
   --uninstall       Remove selected skill names from selected agent dirs
   -h, --help        Show this help
 
@@ -116,8 +116,9 @@ normalize_skill() {
     resume-cursor|cursor) echo "resume-cursor" ;;
     resume-qoder|qoder) echo "resume-qoder" ;;
     resume-grok|grok) echo "resume-grok" ;;
+    resume-zcode|zcode) echo "resume-zcode" ;;
     shared) echo "shared" ;;
-    *) die "unknown skill: $raw (use resume-claude, resume-codex, resume-cursor, resume-qoder, resume-grok)" ;;
+    *) die "unknown skill: $raw (use resume-claude, resume-codex, resume-cursor, resume-qoder, resume-grok, resume-zcode)" ;;
   esac
 }
 

@@ -1,6 +1,6 @@
 # resume-session
 
-把 Claude Code、Codex、Cursor、Qoder CLI、Grok 的会话接续到当前 agent，作为只读历史继续工作。不会自动安装，按下面方式自行安装。
+把 Claude Code、Codex、Cursor、Qoder CLI、Grok、ZCode 的会话接续到当前 agent，作为只读历史继续工作。不会自动安装，按下面方式自行安装。
 
 ## 支持功能
 
@@ -11,11 +11,12 @@
 | `resume-cursor` | 接续 Cursor CLI / Desktop 会话 |
 | `resume-qoder` | 接续 Qoder CLI 会话 |
 | `resume-grok` | 接续 Grok 会话 |
+| `resume-zcode` | 接续 ZCode 会话 |
 
 - 不传参数或传 `latest`：接续当前目录最近一次会话
 - 传会话 ID、transcript 路径、或描述文字：按匹配结果接续
 - 匹配不唯一时列出候选，不会猜测
-- 安装后可用 `/resume-claude`、`/resume-codex` 等命令，或直接说 “continue from Claude / Codex / Cursor / Qoder / Grok”
+- 安装后可用 `/resume-claude`、`/resume-codex`、`/resume-zcode` 等命令，或直接说 “continue from Claude / Codex / Cursor / Qoder / Grok / ZCode”
 
 Qoder 目前只支持 CLI 会话，不支持 Qoder IDE。
 

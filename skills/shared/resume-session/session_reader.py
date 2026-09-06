@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Claude Code, Codex, Cursor, Qoder CLI, and Grok sessions as untrusted inert history."""
+"""Read Claude Code, Codex, Cursor, Qoder CLI, Grok, and ZCode sessions as untrusted inert history."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-TOOLS = ("claude", "codex", "cursor", "qoder", "grok")
+TOOLS = ("claude", "codex", "cursor", "qoder", "grok", "zcode")
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -34,6 +34,24 @@ CODEX_ROLLOUT_RE = re.compile(
     r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
     r"([0-9a-fA-F-]{36})\.jsonl(?:\.zst)?$"
 )
+ZCODE_SESSION_RE = re.compile(
+    r"^sess_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+ZCODE_ROLLOUT_RE = re.compile(
+    r"^model-io-(sess_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$"
+)
+ZCODE_SKIP_PART_TYPES = {
+    "reasoning",
+    "step-start",
+    "step-finish",
+    "snapshot",
+    "patch",
+    "compaction",
+    "retry",
+    "agent",
+}
 GENERATED_META_RE = re.compile(r"^\s*<[a-z][A-Za-z0-9_.:-]*(?:\s|/?>)")
 INTERRUPTED_RE = re.compile(r"^\s*\[Request interrupted by user", re.IGNORECASE)
 CURSOR_SKIPPED_ROLES = {
@@ -1632,6 +1650,12 @@ def _open_sqlite_readonly(path: Path) -> sqlite3.Connection:
         raise ReaderError(f"failed to open SQLite store {path}: {exc}") from exc
 
 
+def _open_sqlite_row_readonly(path: Path) -> sqlite3.Connection:
+    database = _open_sqlite_readonly(path)
+    database.row_factory = sqlite3.Row
+    return database
+
+
 def _table_columns(database: sqlite3.Connection, table: str) -> set[str]:
     try:
         return {str(row[1]) for row in database.execute(f'PRAGMA table_info("{table}")')}
@@ -2425,6 +2449,7 @@ def _sort_and_dedupe(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "qoder-cli": 0,
         "qoder-acp": 1,
         "grok": 0,
+        "zcode-cli": 0,
     }
     ordered = sorted(
         sessions,
@@ -2446,6 +2471,439 @@ def _sort_and_dedupe(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+def _zcode_home() -> Path:
+    configured = os.environ.get("ZCODE_HOME")
+    return Path(configured).expanduser() if configured else Path.home() / ".zcode"
+
+
+def _zcode_database() -> Path:
+    return _zcode_home() / "cli" / "db" / "db.sqlite"
+
+
+def _zcode_normalize_id(value: str) -> str:
+    text = value.strip()
+    if UUID_RE.fullmatch(text):
+        return f"sess_{text}"
+    return text
+
+
+def _zcode_same_cwd(stored: str | None, cwd: str) -> bool:
+    if not stored:
+        return False
+    return os.path.normpath(stored) == os.path.normpath(cwd)
+
+
+def _zcode_parse_data(raw: Any) -> dict[str, Any] | None:
+    if isinstance(raw, dict):
+        return raw
+    parsed = _decode_jsonish(raw)
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _zcode_hidden(data: dict[str, Any]) -> bool:
+    semantics = data.get("semantics")
+    if not isinstance(semantics, dict):
+        return False
+    visibility = semantics.get("transcriptVisibility")
+    return visibility in {"hidden", "none", "omitted"}
+
+
+def _zcode_env_info(data: dict[str, Any]) -> dict[str, Any]:
+    snapshot = data.get("contextSnapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    env = snapshot.get("envInfo")
+    return env if isinstance(env, dict) else {}
+
+
+def _zcode_tool_fields(part: dict[str, Any]) -> dict[str, Any]:
+    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    status = state.get("status")
+    if not isinstance(status, str):
+        status = part.get("state") if isinstance(part.get("state"), str) else ""
+    name = (
+        part.get("tool")
+        or part.get("toolName")
+        or part.get("name")
+        or "unknown"
+    )
+    part_type = part.get("type")
+    if (
+        (not isinstance(name, str) or name == "unknown")
+        and isinstance(part_type, str)
+        and part_type.startswith("tool-")
+        and part_type not in {"tool-call", "tool-result"}
+    ):
+        name = part_type[5:] or "unknown"
+    output = state.get("output", part.get("output"))
+    error = state.get("error", part.get("error"))
+    if output is None and error is not None:
+        output = error
+    return {
+        "id": part.get("callID") or part.get("toolCallId") or part.get("id"),
+        "name": _safe_text(name or "unknown"),
+        "input": state.get("input", part.get("input", part.get("args", {}))),
+        "output": output,
+        "is_error": status in {"error", "failed", "output-error"} or bool(error),
+        "has_input": "input" in state
+        or "input" in part
+        or "args" in part
+        or part.get("type") in {"tool", "tool-call", "dynamic-tool"}
+        or (
+            isinstance(part.get("type"), str)
+            and str(part.get("type")).startswith("tool-")
+            and part.get("type") != "tool-result"
+        ),
+        "has_output": output is not None
+        or status in {"completed", "error", "failed", "output-available", "output-error"}
+        or part.get("type") == "tool-result",
+    }
+
+
+def _render_zcode_part(
+    part: dict[str, Any],
+    max_tool_chars: int,
+    counters: dict[str, int],
+) -> dict[str, Any] | None:
+    if part.get("synthetic") or part.get("ignored"):
+        return None
+    part_type = part.get("type")
+    if part_type == "text":
+        text = part.get("text")
+        if isinstance(text, str) and text.strip() and not _is_generated_meta_text(text):
+            return {"kind": "text", "text": _safe_text(text)}
+        return None
+    if part_type == "file":
+        name = part.get("filename") or part.get("name") or part.get("url") or "file"
+        return {"kind": "text", "text": f"[file: {_safe_text(name)}]"}
+    if part_type == "reasoning":
+        counters["reasoning"] += 1
+        return None
+    if part_type in {"step-start", "step-finish"}:
+        return None
+    if part_type == "compaction":
+        counters["compaction"] += 1
+        return None
+    if part_type in {"snapshot", "patch"}:
+        counters["binary"] += 1
+        return None
+    if part_type in {"retry", "agent"}:
+        counters["skipped"] += 1
+        return None
+    is_tool = part_type in {"tool", "tool-call", "tool-result", "dynamic-tool"} or (
+        isinstance(part_type, str)
+        and part_type.startswith("tool-")
+        and part_type not in ZCODE_SKIP_PART_TYPES
+    )
+    if is_tool:
+        fields = _zcode_tool_fields(part)
+        return {"kind": "tool", **fields}
+    if part_type is not None:
+        counters["unknown"] += 1
+    return None
+
+
+def _render_zcode_message(
+    role: str,
+    parts: list[dict[str, Any]],
+    max_tool_chars: int,
+    counters: dict[str, int],
+) -> list[dict[str, Any]]:
+    texts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    tool_results: list[dict[str, Any]] = []
+    for part in parts:
+        rendered = _render_zcode_part(part, max_tool_chars, counters)
+        if rendered is None:
+            continue
+        if rendered["kind"] == "text":
+            texts.append(rendered["text"])
+            continue
+        if rendered.get("has_input"):
+            tool_calls.append(
+                {
+                    "id": rendered.get("id"),
+                    "name": rendered.get("name") or "unknown",
+                    "input": _json_preview(rendered.get("input", {}), max_tool_chars),
+                    "inert": True,
+                }
+            )
+        if rendered.get("has_output"):
+            tool_results.append(
+                {
+                    "tool_use_id": rendered.get("id"),
+                    "content": _json_preview(rendered.get("output"), max_tool_chars),
+                    "is_error": bool(rendered.get("is_error")),
+                    "unavailable": rendered.get("output") is None,
+                    "inert": True,
+                }
+            )
+    turns: list[dict[str, Any]] = []
+    text = "\n".join(item for item in texts if item.strip())
+    if role == "user":
+        if text.strip() and not _is_generated_meta_text(text):
+            turns.append(_turn("user", text=text))
+        if tool_results:
+            turns.append(_turn("tool", tool_results=tool_results))
+        return turns
+    if text.strip() or tool_calls:
+        turns.append(_turn("assistant", text=text, tool_calls=tool_calls))
+    if tool_results:
+        turns.append(_turn("tool", tool_results=tool_results))
+    return turns
+
+
+def _zcode_list_entry(
+    row: sqlite3.Row,
+    cwd: str,
+    database_path: Path,
+) -> dict[str, Any]:
+    stored_cwd = row["directory"] if isinstance(row["directory"], str) else None
+    if not stored_cwd and isinstance(row["path"], str):
+        stored_cwd = row["path"]
+    updated = _timestamp_to_millis(row["time_updated"]) or 0
+    title = row["title"] if isinstance(row["title"], str) and row["title"].strip() else None
+    return {
+        "tool": "zcode",
+        "source": "zcode-cli",
+        "session_id": row["id"],
+        "path": str(database_path),
+        "title": _one_line(title, 200) if title else "(untitled)",
+        "cwd": stored_cwd or cwd,
+        "branch": None,
+        "updated_at_ms": updated,
+        "updated_at": _iso_from_millis(updated),
+        "source_repo_root_path": (
+            row["path"] if "path" in row.keys() and isinstance(row["path"], str) else None
+        ),
+    }
+
+
+def read_zcode_session(
+    candidate: dict[str, Any], max_tool_chars: int = 300
+) -> dict[str, Any]:
+    session_id = _zcode_normalize_id(str(candidate.get("session_id") or ""))
+    database_path = Path(str(candidate.get("path") or _zcode_database())).expanduser()
+    if database_path.name.endswith(".jsonl"):
+        match = ZCODE_ROLLOUT_RE.fullmatch(database_path.name)
+        if match:
+            session_id = match.group(1)
+        database_path = _zcode_database()
+    if not session_id:
+        raise ReaderError("ZCode session id is required")
+    if not database_path.is_file() or database_path.is_symlink():
+        raise ReaderError(f"failed to read session {database_path}: database is missing")
+    warnings: list[dict[str, str]] = []
+    counters = {"reasoning": 0, "compaction": 0, "binary": 0, "skipped": 0, "unknown": 0}
+    malformed = 0
+    turns: list[dict[str, Any]] = []
+    title = candidate.get("title") if isinstance(candidate.get("title"), str) else None
+    cwd = candidate.get("cwd") if isinstance(candidate.get("cwd"), str) else None
+    branch = candidate.get("branch") if isinstance(candidate.get("branch"), str) else None
+    source_root = candidate.get("source_repo_root_path")
+    created_at = None
+    updated_at = candidate.get("updated_at")
+    try:
+        with _open_sqlite_row_readonly(database_path) as database:
+            columns = _table_columns(database, "session")
+            if not {"id", "directory", "title", "time_updated"}.issubset(columns):
+                raise ReaderError(f"ZCode database {database_path} is missing session columns")
+            row = database.execute(
+                "SELECT * FROM session WHERE id = ? OR id = ?",
+                (session_id, session_id.removeprefix("sess_")),
+            ).fetchone()
+            if row is None:
+                raise ReaderError(f"no zcode session found for native id {session_id}")
+            keys = row.keys()
+            session_id = row["id"]
+            title = row["title"] if isinstance(row["title"], str) and row["title"].strip() else title
+            if isinstance(row["directory"], str) and row["directory"]:
+                cwd = row["directory"]
+            elif "path" in keys and isinstance(row["path"], str) and row["path"]:
+                cwd = row["path"]
+            if "path" in keys and isinstance(row["path"], str) and row["path"]:
+                source_root = row["path"]
+            created_at = _iso_from_millis(_timestamp_to_millis(row["time_created"]))
+            updated_at = _iso_from_millis(_timestamp_to_millis(row["time_updated"]))
+            message_columns = _table_columns(database, "message")
+            part_columns = _table_columns(database, "part")
+            if not {"id", "session_id", "data"}.issubset(message_columns):
+                raise ReaderError(f"ZCode database {database_path} is missing message columns")
+            order = "sequence, time_created, id" if "sequence" in message_columns else "time_created, id"
+            messages = list(
+                database.execute(
+                    f"SELECT id, data FROM message WHERE session_id = ? ORDER BY {order}",
+                    (session_id,),
+                )
+            )
+            parts_by_message: dict[str, list[dict[str, Any]]] = {}
+            if {"message_id", "data"}.issubset(part_columns):
+                part_order = (
+                    "sequence, time_created, id" if "sequence" in part_columns else "time_created, id"
+                )
+                for part_row in database.execute(
+                    f"SELECT message_id, data FROM part WHERE session_id = ? ORDER BY {part_order}",
+                    (session_id,),
+                ):
+                    parsed = _zcode_parse_data(part_row[1])
+                    if parsed is None:
+                        malformed += 1
+                        continue
+                    parts_by_message.setdefault(str(part_row[0]), []).append(parsed)
+            for message_row in messages:
+                data = _zcode_parse_data(message_row[1])
+                if data is None:
+                    malformed += 1
+                    continue
+                if _zcode_hidden(data):
+                    continue
+                role = data.get("role")
+                if role not in {"user", "assistant"}:
+                    continue
+                env = _zcode_env_info(data)
+                if not cwd and isinstance(env.get("cwd"), str):
+                    cwd = env["cwd"]
+                if not branch and isinstance(env.get("gitBranch"), str):
+                    branch = env["gitBranch"]
+                path_info = data.get("path")
+                if isinstance(path_info, dict):
+                    if not cwd and isinstance(path_info.get("cwd"), str):
+                        cwd = path_info["cwd"]
+                    if not source_root and isinstance(path_info.get("root"), str):
+                        source_root = path_info["root"]
+                    if not branch and isinstance(path_info.get("branch"), str):
+                        branch = path_info["branch"]
+                turns.extend(
+                    _render_zcode_message(
+                        role,
+                        parts_by_message.get(str(message_row[0]), []),
+                        max_tool_chars,
+                        counters,
+                    )
+                )
+    except sqlite3.Error as exc:
+        raise ReaderError(f"failed to read session {database_path}: {exc}") from exc
+    if malformed:
+        _add_warning(
+            warnings,
+            "malformed_records_skipped",
+            f"Skipped {malformed} malformed ZCode record(s).",
+        )
+    if counters["reasoning"]:
+        _add_warning(
+            warnings,
+            "unsafe_records_skipped",
+            f"Skipped {counters['reasoning']} ZCode thought/reasoning payload(s).",
+        )
+    if counters["compaction"]:
+        _add_warning(
+            warnings,
+            "compaction_gaps",
+            f"Skipped {counters['compaction']} ZCode compaction payload(s); pre-compact history may be missing.",
+        )
+    if counters["binary"]:
+        _add_warning(
+            warnings,
+            "transcript_content_unavailable",
+            f"Skipped {counters['binary']} ZCode snapshot/patch payload(s); binary content was not recovered.",
+        )
+    if counters["skipped"]:
+        _add_warning(
+            warnings,
+            "unknown_records_skipped",
+            f"Skipped {counters['skipped']} ZCode agent/retry payload(s) without interpreting their payloads.",
+        )
+    if counters["unknown"]:
+        _add_warning(
+            warnings,
+            "unknown_records_skipped",
+            f"Skipped {counters['unknown']} unknown ZCode part(s) without interpreting their payloads.",
+        )
+    if title == "(untitled)":
+        title = None
+    title = title or next(
+        (_one_line(turn["text"], 200) for turn in turns if turn["role"] == "user" and turn["text"]),
+        None,
+    )
+    result = {
+        "tool": "zcode",
+        "source": str(candidate.get("source") or "zcode-cli"),
+        "session_id": session_id,
+        "path": str(database_path),
+        "title": _one_line(title, 200) if title else None,
+        "cwd": cwd,
+        "branch": branch,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "source_repo_root_path": source_root if isinstance(source_root, str) else None,
+        "turns": turns,
+        "warnings": warnings,
+    }
+    return _finalize_result(result)
+
+
+def _discover_zcode(cwd: str, within_min: int) -> list[dict[str, Any]]:
+    database_path = _zcode_database()
+    if not database_path.is_file() or database_path.is_symlink():
+        return []
+    try:
+        with _open_sqlite_row_readonly(database_path) as database:
+            columns = _table_columns(database, "session")
+            required = {"id", "directory", "title", "time_updated"}
+            if not required.issubset(columns):
+                return []
+            archived_filter = "AND time_archived IS NULL" if "time_archived" in columns else ""
+            rows = database.execute(
+                "SELECT * FROM session "
+                f"WHERE 1=1 {archived_filter} "
+                "ORDER BY time_updated DESC, id ASC"
+            )
+            sessions: list[dict[str, Any]] = []
+            for row in rows:
+                session_id = row["id"]
+                if not isinstance(session_id, str) or not ZCODE_SESSION_RE.fullmatch(session_id):
+                    continue
+                parent_id = row["parent_id"] if "parent_id" in row.keys() else None
+                if parent_id:
+                    continue
+                task_type = row["task_type"] if "task_type" in row.keys() else "interactive"
+                if isinstance(task_type, str) and task_type and task_type != "interactive":
+                    continue
+                stored_cwd = row["directory"] if isinstance(row["directory"], str) else None
+                if not stored_cwd and "path" in row.keys() and isinstance(row["path"], str):
+                    stored_cwd = row["path"]
+                if not _zcode_same_cwd(stored_cwd, cwd):
+                    continue
+                updated = _timestamp_to_millis(row["time_updated"]) or 0
+                if not _within(updated, within_min):
+                    continue
+                sessions.append(_zcode_list_entry(row, cwd, database_path))
+            return sessions
+    except (ReaderError, sqlite3.Error):
+        return []
+
+
+def _find_zcode_id(session_id: str, cwd: str) -> dict[str, Any] | None:
+    database_path = _zcode_database()
+    if not database_path.is_file() or database_path.is_symlink():
+        return None
+    wanted = _zcode_normalize_id(session_id)
+    try:
+        with _open_sqlite_row_readonly(database_path) as database:
+            columns = _table_columns(database, "session")
+            if not {"id", "directory", "title", "time_updated"}.issubset(columns):
+                return None
+            row = database.execute(
+                "SELECT * FROM session WHERE id = ? OR id = ?",
+                (wanted, wanted.removeprefix("sess_")),
+            ).fetchone()
+            if row is None:
+                return None
+            return _zcode_list_entry(row, cwd, database_path)
+    except (ReaderError, sqlite3.Error):
+        return None
+
+
 def discover_sessions(tool: str, cwd: str, within_min: int = 0) -> list[dict[str, Any]]:
     if tool not in TOOLS:
         raise ReaderError(f"unsupported tool: {tool}")
@@ -2458,6 +2916,8 @@ def discover_sessions(tool: str, cwd: str, within_min: int = 0) -> list[dict[str
         sessions = _discover_qoder(requested_cwd, within_min)
     elif tool == "grok":
         sessions = _discover_grok(requested_cwd, within_min)
+    elif tool == "zcode":
+        sessions = _discover_zcode(requested_cwd, within_min)
     else:
         sessions = _discover_cursor_cli(requested_cwd, within_min)
         sessions.extend(_discover_cursor_desktop(requested_cwd, within_min))
@@ -2535,6 +2995,25 @@ def _candidate_from_path(tool: str, raw_path: str, cwd: str) -> dict[str, Any] |
             "cwd": cwd,
             "updated_at_ms": updated,
         }
+    if tool == "zcode":
+        match = ZCODE_ROLLOUT_RE.fullmatch(path.name)
+        if match and path.is_file():
+            session_id = match.group(1)
+            database_path = _zcode_database()
+            found = _find_zcode_id(session_id, cwd)
+            if found is not None:
+                return found
+            return {
+                "tool": tool,
+                "source": "zcode-cli",
+                "session_id": session_id,
+                "path": str(database_path if database_path.is_file() else path),
+                "title": None,
+                "cwd": cwd,
+                "updated_at_ms": updated,
+            }
+        if path.is_file() and path.name == "db.sqlite":
+            return None
     return None
 
 
@@ -2648,13 +3127,15 @@ def resolve_session(
     exact = [item for item in sessions if item["session_id"].lower() == ref.lower()]
     if len(exact) == 1:
         return exact[0]
-    if UUID_RE.fullmatch(ref):
+    native = UUID_RE.fullmatch(ref) or (tool == "zcode" and ZCODE_SESSION_RE.fullmatch(ref))
+    if native:
         finder = {
             "claude": _find_claude_id,
             "codex": _find_codex_id,
             "cursor": _find_cursor_id,
             "qoder": _find_qoder_id,
             "grok": _find_grok_id,
+            "zcode": _find_zcode_id,
         }[tool]
         found = finder(ref, cwd)
         if found is not None:
@@ -2685,6 +3166,8 @@ def read_resolved_session(
         return read_qoder_session(candidate["path"], max_tool_chars)
     if tool == "grok":
         return read_grok_session(candidate["path"], max_tool_chars)
+    if tool == "zcode":
+        return read_zcode_session(candidate, max_tool_chars)
     return read_cursor_session(candidate, max_tool_chars)
 
 
