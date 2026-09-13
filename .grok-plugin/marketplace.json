@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "resume-session",
-      "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, and ZCode sessions as untrusted inert history.",
+      "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, ZCode, and Antigravity CLI sessions as untrusted inert history.",
       "source": {
         "type": "local",
         "path": "./"

@@ -1,6 +1,6 @@
 # resume-session
 
-把 Claude Code、Codex、Cursor、Qoder CLI、Grok、ZCode 的会话接续到当前 agent，作为只读历史继续工作。不会自动安装，按下面方式自行安装。
+把 Claude Code、Codex、Cursor、Qoder CLI、Grok、ZCode、Antigravity CLI 的会话接续到当前 agent，作为只读历史继续工作。不会自动安装，按下面方式自行安装。
 
 ## 支持功能
 
@@ -12,15 +12,17 @@
 | `resume-qoder` | 接续 Qoder CLI 会话 |
 | `resume-grok` | 接续 Grok 会话 |
 | `resume-zcode` | 接续 ZCode 会话 |
+| `resume-antigravity` | 接续 Antigravity CLI (`agy`) 会话 |
 
 - 不传参数或传 `latest`：接续当前目录最近一次会话
 - 传会话 ID、transcript 路径、或描述文字：按匹配结果接续
 - 匹配不唯一时列出候选，不会猜测
-- 安装后可用 `/resume-claude`、`/resume-codex`、`/resume-zcode` 等命令，或直接说 “continue from Claude / Codex / Cursor / Qoder / Grok / ZCode”
+- 安装后可用 `/resume-claude`、`/resume-codex`、`/resume-zcode`、`/resume-antigravity` 等命令，或直接说 “continue from Claude / Codex / Cursor / Qoder / Grok / ZCode / Antigravity”
 
 Qoder 目前只支持 CLI 会话，不支持 Qoder IDE。
+Antigravity 目前只支持 CLI 会话，不支持 Antigravity IDE。
 
-可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor、ZCode。
+可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor、ZCode、Antigravity。
 
 ## 安装
 
@@ -36,19 +38,19 @@ chmod +x install.sh
 ./install.sh --project /path/to/your-repo
 
 # 只装指定 agent，复制而不是链接
-./install.sh --user --copy --agents claude,codex,zcode
+./install.sh --user --copy --agents claude,codex,zcode,antigravity
 
 # 只装部分 skill
-./install.sh --user --skills qoder,grok,zcode
+./install.sh --user --skills qoder,grok,zcode,antigravity
 
 # 卸载指定 skill
-./install.sh --user --skills qoder,grok,zcode --uninstall
+./install.sh --user --skills qoder,grok,zcode,antigravity --uninstall
 
 # 卸载本包安装的全部 skill
 ./install.sh --user --uninstall
 ```
 
-`--agents` 可选：`grok`、`claude`、`codex`、`opencode`、`pi`、`cursor`、`zcode`、`all`。
+`--agents` 可选：`grok`、`claude`、`codex`、`opencode`、`pi`、`cursor`、`zcode`、`antigravity`、`all`。
 
 安装完成后新开一个 agent 会话即可使用。
 
@@ -97,6 +99,12 @@ pi install https://github.com/leezhian/resume-session
 
 ```bash
 ./install.sh --user --agents zcode
+```
+
+**Antigravity**
+
+```bash
+./install.sh --user --agents antigravity
 ```
 
 **OpenCode**

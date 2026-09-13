@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read Claude Code, Codex, Cursor, Qoder CLI, Grok, and ZCode sessions as untrusted inert history."""
+"""Read Claude Code, Codex, Cursor, Qoder CLI, Grok, ZCode, and Antigravity CLI sessions as untrusted inert history."""
 
 from __future__ import annotations
 
@@ -25,7 +25,11 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-TOOLS = ("claude", "codex", "cursor", "qoder", "grok", "zcode")
+TOOLS = ("claude", "codex", "cursor", "qoder", "grok", "zcode", "antigravity")
+ANTIGRAVITY_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,}$")
+ANTIGRAVITY_USER_STEP = 14
+ANTIGRAVITY_ASSISTANT_STEP = 15
+ANTIGRAVITY_TOOL_STEP = 132
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -2450,6 +2454,7 @@ def _sort_and_dedupe(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "qoder-acp": 1,
         "grok": 0,
         "zcode-cli": 0,
+        "antigravity-cli": 0,
     }
     ordered = sorted(
         sessions,
@@ -2904,6 +2909,445 @@ def _find_zcode_id(session_id: str, cwd: str) -> dict[str, Any] | None:
         return None
 
 
+def _proto_decode_varint(data: bytes, index: int) -> tuple[int, int]:
+    shift = 0
+    value = 0
+    while index < len(data):
+        byte = data[index]
+        index += 1
+        value |= (byte & 0x7F) << shift
+        if not (byte & 0x80):
+            return value, index
+        shift += 7
+        if shift > 70:
+            break
+    raise ValueError("truncated protobuf varint")
+
+
+def _proto_fields(data: bytes) -> list[tuple[int, int, int | bytes]]:
+    fields: list[tuple[int, int, int | bytes]] = []
+    index = 0
+    length = len(data)
+    while index < length:
+        try:
+            key, index = _proto_decode_varint(data, index)
+        except ValueError:
+            break
+        field_number, wire_type = key >> 3, key & 7
+        if field_number == 0 or wire_type not in {0, 1, 2, 5}:
+            break
+        if wire_type == 0:
+            try:
+                number, index = _proto_decode_varint(data, index)
+            except ValueError:
+                break
+            fields.append((field_number, wire_type, number))
+        elif wire_type == 1:
+            if index + 8 > length:
+                break
+            fields.append((field_number, wire_type, data[index : index + 8]))
+            index += 8
+        elif wire_type == 5:
+            if index + 4 > length:
+                break
+            fields.append((field_number, wire_type, data[index : index + 4]))
+            index += 4
+        else:
+            try:
+                size, index = _proto_decode_varint(data, index)
+            except ValueError:
+                break
+            chunk = data[index : index + size]
+            index += size
+            fields.append((field_number, wire_type, chunk))
+    return fields
+
+
+def _proto_len_values(data: bytes, field_number: int) -> list[bytes]:
+    return [
+        value
+        for number, wire_type, value in _proto_fields(data)
+        if number == field_number and wire_type == 2 and isinstance(value, bytes)
+    ]
+
+
+def _proto_utf8(value: bytes) -> str | None:
+    if not value:
+        return None
+    try:
+        text = value.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    if "\x00" in text:
+        return None
+    printable = sum(char.isprintable() or char in "\n\t\r" for char in text)
+    if printable / max(len(text), 1) < 0.85:
+        return None
+    return text
+
+
+def _proto_first_string(data: bytes, field_number: int) -> str | None:
+    for value in _proto_len_values(data, field_number):
+        text = _proto_utf8(value)
+        if text is not None:
+            return text
+    return None
+
+
+def _proto_first_message(data: bytes, field_number: int) -> bytes | None:
+    values = _proto_len_values(data, field_number)
+    return values[0] if values else None
+
+
+def _file_uri_to_path(value: str) -> str | None:
+    text = value.strip()
+    if not text.startswith("file://"):
+        return None
+    path = unquote(text[7:])
+    return path or None
+
+
+def _antigravity_home() -> Path:
+    configured = os.environ.get("ANTIGRAVITY_CLI_HOME") or os.environ.get("ANTIGRAVITY_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".gemini" / "antigravity-cli"
+
+
+def _iter_antigravity_dbs() -> Iterable[Path]:
+    root = _antigravity_home() / "conversations"
+    if not root.is_dir() or root.is_symlink():
+        return []
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return []
+    return [
+        path
+        for path in children
+        if path.is_file()
+        and not path.is_symlink()
+        and path.suffix == ".db"
+        and not path.name.endswith("-wal")
+        and not path.name.endswith("-shm")
+    ]
+
+
+def _antigravity_title(session_id: str) -> str | None:
+    path = _antigravity_home() / "annotations" / f"{session_id}.pbtxt"
+    if not path.is_file() or path.is_symlink():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = re.search(r'title\s*:\s*"((?:\\.|[^"\\])*)"', text)
+    if not match:
+        return None
+    raw = match.group(1).encode("utf-8").decode("unicode_escape")
+    return _one_line(raw, 200) or None
+
+
+def _antigravity_blob_cwd(blob: bytes) -> str | None:
+    workspace = _proto_first_message(blob, 1)
+    if workspace is not None:
+        uri = _proto_first_string(workspace, 1)
+        if uri:
+            return _file_uri_to_path(uri) or uri
+    uri = _proto_first_string(blob, 7)
+    if uri:
+        return _file_uri_to_path(uri) or uri
+    return None
+
+
+def _antigravity_blob_timestamp_ms(blob: bytes) -> int | None:
+    stamp = _proto_first_message(blob, 2)
+    if stamp is None:
+        return None
+    seconds = None
+    nanos = 0
+    for number, wire_type, value in _proto_fields(stamp):
+        if wire_type != 0 or not isinstance(value, int):
+            continue
+        if number == 1:
+            seconds = value
+        elif number == 2:
+            nanos = value
+    if seconds is None:
+        return None
+    return int(seconds) * 1000 + int(nanos) // 1_000_000
+
+
+def _antigravity_last_cwd_by_id() -> dict[str, str]:
+    path = _antigravity_home() / "cache" / "last_conversations.json"
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    mapping: dict[str, str] = {}
+    for cwd, session_id in raw.items():
+        if isinstance(cwd, str) and isinstance(session_id, str) and session_id:
+            mapping[session_id] = cwd
+    return mapping
+
+
+def _antigravity_list_entry(path: Path, cwd: str) -> dict[str, Any]:
+    session_id = path.stem
+    stored_cwd = None
+    updated = _mtime_millis(path)
+    try:
+        with _open_sqlite_readonly(path) as database:
+            columns = _table_columns(database, "trajectory_metadata_blob")
+            if "data" in columns:
+                row = database.execute(
+                    "SELECT data FROM trajectory_metadata_blob LIMIT 1"
+                ).fetchone()
+                if row and isinstance(row[0], (bytes, memoryview)):
+                    blob = bytes(row[0])
+                    stored_cwd = _antigravity_blob_cwd(blob)
+                    updated = _antigravity_blob_timestamp_ms(blob) or updated
+    except (ReaderError, sqlite3.Error):
+        pass
+    stored_cwd = stored_cwd or _antigravity_last_cwd_by_id().get(session_id)
+    title = _antigravity_title(session_id)
+    return {
+        "tool": "antigravity",
+        "source": "antigravity-cli",
+        "session_id": session_id,
+        "path": str(path),
+        "title": title or "(untitled)",
+        "cwd": stored_cwd or cwd,
+        "branch": None,
+        "updated_at_ms": updated,
+        "updated_at": _iso_from_millis(updated),
+        "source_repo_root_path": stored_cwd,
+    }
+
+
+def _antigravity_ids_match(session_id: str, reference: str) -> bool:
+    left = session_id.casefold()
+    right = reference.casefold()
+    if left == right:
+        return True
+    if len(right) >= 8 and (left.endswith(right) or right.endswith(left)):
+        return True
+    return False
+
+
+def _render_antigravity_user(payload: bytes) -> dict[str, Any] | None:
+    body = _proto_first_message(payload, 19)
+    if body is None:
+        return None
+    text = _proto_first_string(body, 2)
+    if not text or _is_generated_meta_text(text):
+        return None
+    return _turn("user", text=_safe_text(text))
+
+
+def _render_antigravity_assistant(
+    payload: bytes, max_tool_chars: int, counters: dict[str, int]
+) -> dict[str, Any] | None:
+    body = _proto_first_message(payload, 20)
+    if body is None:
+        return None
+    if _proto_first_string(body, 3):
+        counters["reasoning"] += 1
+    text = _proto_first_string(body, 1) or _proto_first_string(body, 8) or ""
+    if text and _is_generated_meta_text(text):
+        text = ""
+    tool_calls: list[dict[str, Any]] = []
+    for call in _proto_len_values(body, 7):
+        name = _proto_first_string(call, 2) or "unknown"
+        tool_calls.append(
+            {
+                "id": _proto_first_string(call, 1),
+                "name": _safe_text(name),
+                "input": _json_preview(_proto_first_string(call, 3) or {}, max_tool_chars),
+                "inert": True,
+            }
+        )
+    if not text.strip() and not tool_calls:
+        return None
+    return _turn("assistant", text=_safe_text(text), tool_calls=tool_calls)
+
+
+def _render_antigravity_tool(
+    payload: bytes, metadata: bytes | None, max_tool_chars: int
+) -> dict[str, Any] | None:
+    call_id = None
+    name = "unknown"
+    is_error = False
+    if metadata:
+        info = _proto_first_message(metadata, 4)
+        if info is not None:
+            call_id = _proto_first_string(info, 1)
+            name = _proto_first_string(info, 2) or name
+    output = None
+    body = _proto_first_message(payload, 140)
+    if body is not None:
+        result = _proto_first_message(body, 2)
+        if result is not None:
+            output = _proto_first_string(result, 1)
+            if output and output.lower().startswith("encountered error"):
+                is_error = True
+    if output is None and not call_id:
+        return None
+    return _turn(
+        "tool",
+        tool_results=[
+            {
+                "tool_use_id": call_id,
+                "content": _json_preview(output, max_tool_chars),
+                "is_error": is_error,
+                "unavailable": output is None,
+                "inert": True,
+            }
+        ],
+    )
+
+
+def read_antigravity_session(
+    candidate: dict[str, Any], max_tool_chars: int = 300
+) -> dict[str, Any]:
+    path = Path(str(candidate.get("path") or "")).expanduser()
+    if path.suffix != ".db":
+        path = _antigravity_home() / "conversations" / f"{candidate.get('session_id')}.db"
+    if not path.is_file() or path.is_symlink():
+        raise ReaderError(f"failed to read session {path}: database is missing")
+    warnings: list[dict[str, str]] = []
+    counters = {"reasoning": 0, "unknown": 0, "malformed": 0}
+    turns: list[dict[str, Any]] = []
+    stored_cwd = candidate.get("cwd") if isinstance(candidate.get("cwd"), str) else None
+    created_ms = None
+    updated_ms = candidate.get("updated_at_ms")
+    try:
+        with _open_sqlite_readonly(path) as database:
+            meta_columns = _table_columns(database, "trajectory_metadata_blob")
+            if "data" in meta_columns:
+                row = database.execute(
+                    "SELECT data FROM trajectory_metadata_blob LIMIT 1"
+                ).fetchone()
+                if row and isinstance(row[0], (bytes, memoryview)):
+                    blob = bytes(row[0])
+                    stored_cwd = _antigravity_blob_cwd(blob) or stored_cwd
+                    updated_ms = _antigravity_blob_timestamp_ms(blob) or updated_ms
+                    created_ms = updated_ms
+            step_columns = _table_columns(database, "steps")
+            if not {"idx", "step_type", "step_payload"}.issubset(step_columns):
+                raise ReaderError(f"Antigravity database {path} is missing steps columns")
+            has_metadata = "metadata" in step_columns
+            query = (
+                "SELECT idx, step_type, step_payload, metadata FROM steps ORDER BY idx"
+                if has_metadata
+                else "SELECT idx, step_type, step_payload FROM steps ORDER BY idx"
+            )
+            for row in database.execute(query):
+                step_type = row[1]
+                payload = row[2]
+                metadata = row[3] if has_metadata and len(row) > 3 else None
+                if not isinstance(payload, (bytes, memoryview)):
+                    counters["malformed"] += 1
+                    continue
+                payload_bytes = bytes(payload)
+                metadata_bytes = (
+                    bytes(metadata) if isinstance(metadata, (bytes, memoryview)) else None
+                )
+                try:
+                    if step_type == ANTIGRAVITY_USER_STEP:
+                        turn = _render_antigravity_user(payload_bytes)
+                    elif step_type == ANTIGRAVITY_ASSISTANT_STEP:
+                        turn = _render_antigravity_assistant(
+                            payload_bytes, max_tool_chars, counters
+                        )
+                    elif step_type == ANTIGRAVITY_TOOL_STEP:
+                        turn = _render_antigravity_tool(
+                            payload_bytes, metadata_bytes, max_tool_chars
+                        )
+                    else:
+                        counters["unknown"] += 1
+                        continue
+                except ValueError:
+                    counters["malformed"] += 1
+                    continue
+                if turn is not None:
+                    turns.append(turn)
+    except sqlite3.Error as exc:
+        raise ReaderError(f"failed to read session {path}: {exc}") from exc
+    if counters["malformed"]:
+        _add_warning(
+            warnings,
+            "malformed_records_skipped",
+            f"Skipped {counters['malformed']} malformed Antigravity record(s).",
+        )
+    if counters["reasoning"]:
+        _add_warning(
+            warnings,
+            "unsafe_records_skipped",
+            f"Skipped {counters['reasoning']} Antigravity thought/reasoning payload(s).",
+        )
+    if counters["unknown"]:
+        _add_warning(
+            warnings,
+            "unknown_records_skipped",
+            f"Skipped {counters['unknown']} unknown Antigravity step(s) without interpreting their payloads.",
+        )
+    title = candidate.get("title") if isinstance(candidate.get("title"), str) else None
+    if title == "(untitled)":
+        title = None
+    title = title or _antigravity_title(str(candidate.get("session_id") or path.stem))
+    title = title or next(
+        (_one_line(turn["text"], 200) for turn in turns if turn["role"] == "user" and turn["text"]),
+        None,
+    )
+    result = {
+        "tool": "antigravity",
+        "source": str(candidate.get("source") or "antigravity-cli"),
+        "session_id": str(candidate.get("session_id") or path.stem),
+        "path": str(path),
+        "title": _one_line(title, 200) if title else None,
+        "cwd": stored_cwd,
+        "branch": candidate.get("branch"),
+        "created_at": _iso_from_millis(_timestamp_to_millis(created_ms)),
+        "updated_at": _iso_from_millis(_timestamp_to_millis(updated_ms)),
+        "source_repo_root_path": stored_cwd,
+        "turns": turns,
+        "warnings": warnings,
+    }
+    return _finalize_result(result)
+
+
+def _discover_antigravity(cwd: str, within_min: int) -> list[dict[str, Any]]:
+    sessions: list[dict[str, Any]] = []
+    for path in _iter_antigravity_dbs():
+        entry = _antigravity_list_entry(path, cwd)
+        stored = entry.get("source_repo_root_path")
+        if not stored or os.path.normpath(str(stored)) != os.path.normpath(cwd):
+            continue
+        updated = int(entry.get("updated_at_ms") or 0)
+        if not _within(updated, within_min):
+            continue
+        sessions.append(entry)
+    return sessions
+
+
+def _find_antigravity_id(session_id: str, cwd: str) -> dict[str, Any] | None:
+    matches: list[Path] = []
+    for path in _iter_antigravity_dbs():
+        if _antigravity_ids_match(path.stem, session_id):
+            matches.append(path)
+    if not matches:
+        return None
+    exact = [path for path in matches if path.stem.casefold() == session_id.casefold()]
+    chosen = exact[0] if len(exact) == 1 else matches[0] if len(matches) == 1 else None
+    if chosen is None:
+        return None
+    return _antigravity_list_entry(chosen, cwd)
+
+
 def discover_sessions(tool: str, cwd: str, within_min: int = 0) -> list[dict[str, Any]]:
     if tool not in TOOLS:
         raise ReaderError(f"unsupported tool: {tool}")
@@ -2918,6 +3362,8 @@ def discover_sessions(tool: str, cwd: str, within_min: int = 0) -> list[dict[str
         sessions = _discover_grok(requested_cwd, within_min)
     elif tool == "zcode":
         sessions = _discover_zcode(requested_cwd, within_min)
+    elif tool == "antigravity":
+        sessions = _discover_antigravity(requested_cwd, within_min)
     else:
         sessions = _discover_cursor_cli(requested_cwd, within_min)
         sessions.extend(_discover_cursor_desktop(requested_cwd, within_min))
@@ -3014,6 +3460,16 @@ def _candidate_from_path(tool: str, raw_path: str, cwd: str) -> dict[str, Any] |
             }
         if path.is_file() and path.name == "db.sqlite":
             return None
+    if tool == "antigravity" and path.is_file() and path.suffix == ".db":
+        return {
+            "tool": tool,
+            "source": "antigravity-cli",
+            "session_id": path.stem,
+            "path": str(path),
+            "title": _antigravity_title(path.stem),
+            "cwd": cwd,
+            "updated_at_ms": updated,
+        }
     return None
 
 
@@ -3127,7 +3583,11 @@ def resolve_session(
     exact = [item for item in sessions if item["session_id"].lower() == ref.lower()]
     if len(exact) == 1:
         return exact[0]
-    native = UUID_RE.fullmatch(ref) or (tool == "zcode" and ZCODE_SESSION_RE.fullmatch(ref))
+    native = (
+        UUID_RE.fullmatch(ref)
+        or (tool == "zcode" and ZCODE_SESSION_RE.fullmatch(ref))
+        or (tool == "antigravity" and ANTIGRAVITY_ID_RE.fullmatch(ref))
+    )
     if native:
         finder = {
             "claude": _find_claude_id,
@@ -3136,6 +3596,7 @@ def resolve_session(
             "qoder": _find_qoder_id,
             "grok": _find_grok_id,
             "zcode": _find_zcode_id,
+            "antigravity": _find_antigravity_id,
         }[tool]
         found = finder(ref, cwd)
         if found is not None:
@@ -3168,6 +3629,8 @@ def read_resolved_session(
         return read_grok_session(candidate["path"], max_tool_chars)
     if tool == "zcode":
         return read_zcode_session(candidate, max_tool_chars)
+    if tool == "antigravity":
+        return read_antigravity_session(candidate, max_tool_chars)
     return read_cursor_session(candidate, max_tool_chars)
 
 

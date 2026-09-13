@@ -1,11 +1,11 @@
 {
   "name": "resume-session",
-  "version": "0.1.0",
-  "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, and ZCode sessions as untrusted inert history.",
+  "version": "0.2.0",
+  "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, ZCode, and Antigravity CLI sessions as untrusted inert history.",
   "author": {
     "name": "fengqun"
   },
-  "keywords": ["resume", "session", "claude", "codex", "cursor", "qoder", "grok", "zcode"],
+  "keywords": ["resume", "session", "claude", "codex", "cursor", "qoder", "grok", "zcode", "antigravity"],
   "skills": "./skills/",
   "interface": {
     "displayName": "resume-session",

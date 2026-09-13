@@ -1,7 +1,7 @@
 # Resume a foreign coding-agent session
 
-The wrapper sets `TOOL` to `claude`, `codex`, `cursor`, `qoder`, `grok`, or `zcode`
-and sets `SHARED_DIR` to the directory containing this file.
+The wrapper sets `TOOL` to `claude`, `codex`, `cursor`, `qoder`, `grok`, `zcode`,
+or `antigravity` and sets `SHARED_DIR` to the directory containing this file.
 
 ## Safety boundary
 
@@ -53,7 +53,7 @@ Supported optional flags are `--within-min N` and `--max-tool-chars N`. Use
 The approved interface is:
 
 ```text
-session_reader.py <claude|codex|cursor|qoder|grok|zcode> <list|show> [ref] [--cwd DIR] [--within-min N] [--json] [--max-tool-chars N]
+session_reader.py <claude|codex|cursor|qoder|grok|zcode|antigravity> <list|show> [ref] [--cwd DIR] [--within-min N] [--json] [--max-tool-chars N]
 ```
 
 ## Build the handoff

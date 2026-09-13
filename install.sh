@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install resume-session skills for Claude Code, Codex, OpenCode, Pi, Grok, Cursor, ZCode.
-# Does not call any agent plugin installer. Includes resume-zcode.
+# Install resume-session skills for Claude Code, Codex, OpenCode, Pi, Grok, Cursor, ZCode, Antigravity.
+# Does not call any agent plugin installer.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 SKILLS_SRC="${ROOT}/skills"
-ALL_SKILLS=(resume-claude resume-codex resume-cursor resume-qoder resume-grok resume-zcode)
+ALL_SKILLS=(resume-claude resume-codex resume-cursor resume-qoder resume-grok resume-zcode resume-antigravity)
 
 SCOPE="user"
 MODE="link"
@@ -25,10 +25,10 @@ Options:
   --project [DIR]   Project install; DIR defaults to the current working directory
   --copy            Copy files instead of symlinking
   --link            Symlink into agent dirs (default)
-  --agents LIST     Where to install: grok,claude,codex,opencode,pi,cursor,zcode,all
+  --agents LIST     Where to install: grok,claude,codex,opencode,pi,cursor,zcode,antigravity,all
   --skills LIST     Which skills: resume-claude,resume-codex,resume-cursor,
-                    resume-qoder,resume-grok,resume-zcode,all
-                    Short names also work: claude,codex,cursor,qoder,grok,zcode
+                    resume-qoder,resume-grok,resume-zcode,resume-antigravity,all
+                    Short names also work: claude,codex,cursor,qoder,grok,zcode,antigravity,agy
   --uninstall       Remove selected skill names from selected agent dirs
   -h, --help        Show this help
 
@@ -117,8 +117,9 @@ normalize_skill() {
     resume-qoder|qoder) echo "resume-qoder" ;;
     resume-grok|grok) echo "resume-grok" ;;
     resume-zcode|zcode) echo "resume-zcode" ;;
+    resume-antigravity|antigravity|agy) echo "resume-antigravity" ;;
     shared) echo "shared" ;;
-    *) die "unknown skill: $raw (use resume-claude, resume-codex, resume-cursor, resume-qoder, resume-grok, resume-zcode)" ;;
+    *) die "unknown skill: $raw (use resume-claude, resume-codex, resume-cursor, resume-qoder, resume-grok, resume-zcode, resume-antigravity)" ;;
   esac
 }
 
@@ -169,6 +170,7 @@ vendor_dests() {
     agent_wanted pi && echo "${PREFIX}/.pi/agent/skills"
     agent_wanted cursor && echo "${PREFIX}/.cursor/skills"
     agent_wanted zcode && echo "${PREFIX}/.zcode/skills"
+    agent_wanted antigravity && echo "${PREFIX}/.gemini/antigravity-cli/skills"
   else
     agent_wanted grok && echo "${PREFIX}/.grok/skills"
     agent_wanted claude && echo "${PREFIX}/.claude/skills"
@@ -177,6 +179,7 @@ vendor_dests() {
     agent_wanted pi && echo "${PREFIX}/.pi/skills"
     agent_wanted cursor && echo "${PREFIX}/.cursor/skills"
     agent_wanted zcode && echo "${PREFIX}/.zcode/skills"
+    agent_wanted antigravity && echo "${PREFIX}/.gemini/skills"
   fi
 }
 
