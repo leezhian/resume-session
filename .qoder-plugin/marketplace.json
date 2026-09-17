@@ -1,0 +1,15 @@
+{
+  "name": "resume-session",
+  "description": "Resume foreign coding-agent sessions as inert history.",
+  "owner": {
+    "name": "fengqun"
+  },
+  "plugins": [
+    {
+      "name": "resume-session",
+      "description": "Resume Claude Code, Codex, Cursor, Grok, Qoder CLI, ZCode, and Antigravity CLI sessions as untrusted inert history.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}

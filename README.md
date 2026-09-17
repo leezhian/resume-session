@@ -22,7 +22,7 @@
 Qoder 目前只支持 CLI 会话，不支持 Qoder IDE。
 Antigravity 目前只支持 CLI 会话，不支持 Antigravity IDE。
 
-可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor、ZCode、Antigravity。
+可用的 agent：Claude Code、Codex、OpenCode、Pi、Grok、Cursor、Qoder、ZCode、Antigravity。
 
 ## 安装
 
@@ -90,6 +90,32 @@ grok plugin install https://github.com/leezhian/resume-session --trust
 ```bash
 pi install https://github.com/leezhian/resume-session
 ```
+
+**Qoder**
+
+```bash
+qoder plugins marketplace add https://github.com/leezhian/resume-session
+qoder plugins install resume-session
+```
+
+或从本地克隆安装：
+
+```bash
+qoder plugins install /path/to/resume-plugin
+```
+
+装完后执行 `/plugins reload` 或新开会话。
+
+Qoder IDE 本地导入的是 zip（不是文件夹）。zip 根目录必须直接包含 `.qoder-plugin/plugin.json`，不要再套一层仓库目录：
+
+```bash
+cd /path/to/resume-plugin
+zip -r ../resume-session.zip .qoder-plugin skills README.md package.json
+```
+
+然后在 IDE：设置 → 插件 → 自定义 → 导入，选这个 zip。
+
+若已经用 `install.sh --user` 装过，Qoder 能从 `~/.agents/skills` 看到 skill，不要再 `qoder plugins install` 一遍，以免重复。以前手工导入过 custom 副本的，先卸掉再装本仓库。
 
 **ZCode**
 
